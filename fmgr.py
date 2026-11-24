@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 from abc import ABC, abstractmethod
 
 """ File Manager Console Application
@@ -17,6 +18,8 @@ from abc import ABC, abstractmethod
         - étape 1 : exploration sortie de FileManager vers FileExplorer
         - étape 2 : inversion de contrôle, FileManager ne dépend plus que
           d'abstractions (interfaces) injectées par le constructeur
+        - étape 3 : gestion des erreurs via UserInterface.error_choice
+          (0 ignorer, 1 toujours ignorer, 2 stopper, 3 annuler + rollback)
 """
 
 
@@ -74,12 +77,32 @@ class FileSystemWriter(ABC):
     @abstractmethod
     def remove_tree(self, path): ...
 
+    @abstractmethod
+    def make_temp_dir(self):
+        """Create a temporary directory (used as trash for rollback)"""
+
 
 class MessageOutput(ABC):
     """Affichage de messages à l'utilisateur"""
 
     @abstractmethod
     def show_message(self, message): ...
+
+
+class ErrorChoice:
+    """Choix possibles de l'utilisateur après une erreur"""
+    IGNORE = 0          # ignorer l'erreur et continuer
+    ALWAYS_IGNORE = 1   # toujours ignorer les erreurs (pour l'opération en cours)
+    STOP = 2            # stopper l'opération en cours
+    CANCEL = 3          # annuler l'opération en cours + rollback
+
+
+class UserInterface(MessageOutput):
+    """Interface utilisateur dont dépend FileManager"""
+
+    @abstractmethod
+    def error_choice(self, operation, path, error):
+        """Informe l'utilisateur de l'erreur et renvoie son choix (voir ErrorChoice)"""
 
 
 # ---------------------------------------------------------------------------
@@ -113,12 +136,27 @@ class OsFileSystem(FileSystemReader, FileSystemWriter):
     def remove_tree(self, path):
         shutil.rmtree(path)
 
+    def make_temp_dir(self):
+        return tempfile.mkdtemp(prefix="fmgr-trash-")
 
-class ConsoleUserInterface(MessageOutput):
+
+class ConsoleUserInterface(UserInterface):
     """Interface utilisateur console"""
 
     def show_message(self, message):
         print(message)
+
+    def error_choice(self, operation, path, error):
+        print(f"\n{operation} error on '{path}': {error}")
+        print(f"  {ErrorChoice.IGNORE}. Ignore and continue")
+        print(f"  {ErrorChoice.ALWAYS_IGNORE}. Always ignore errors")
+        print(f"  {ErrorChoice.STOP}. Stop the operation")
+        print(f"  {ErrorChoice.CANCEL}. Cancel the operation (rollback)")
+        while True:
+            answer = input("Your choice: ").strip()
+            if answer in ("0", "1", "2", "3"):
+                return int(answer)
+            print("Invalid choice")
 
     def ask(self, prompt):
         return input(prompt)
@@ -239,49 +277,109 @@ class FileManager:
     """
 
     def __init__(self, selection: SelectionProvider, reader: FileSystemReader,
-                 writer: FileSystemWriter, output: MessageOutput):
+                 writer: FileSystemWriter, ui: UserInterface):
         self.selection = selection
         self.reader = reader
         self.writer = writer
-        self.output = output
+        self.ui = ui
 
+    # -- moteur commun ------------------------------------------------------
+    def _run(self, operation, action):
+        """Applique action(file) à chaque fichier sélectionné.
+
+        action renvoie une fonction d'annulation, utilisée pour le rollback.
+        Renvoie le nombre de fichiers traités, ou None si l'opération est annulée.
+        """
+        undo_stack = []
+        always_ignore = False
+        done = 0
+        for file in list(self.selection.get_selected_files()):
+            try:
+                undo_stack.append(action(file))
+                done += 1
+            except Exception as e:
+                if always_ignore:
+                    continue
+                choice = self.ui.error_choice(operation, file, e)
+                if choice == ErrorChoice.IGNORE:
+                    continue
+                if choice == ErrorChoice.ALWAYS_IGNORE:
+                    always_ignore = True
+                    continue
+                if choice == ErrorChoice.CANCEL:
+                    self._rollback(undo_stack)
+                    self.ui.show_message(
+                        f"{operation} cancelled, {len(undo_stack)} operation(s) rolled back")
+                    return None
+                # STOP (ou choix inconnu) : on s'arrête, ce qui est fait reste fait
+                self.ui.show_message(f"{operation} stopped")
+                break
+        self.selection.clear_selection()
+        return done
+
+    def _rollback(self, undo_stack):
+        for undo in reversed(undo_stack):
+            try:
+                undo()
+            except Exception as e:
+                self.ui.show_message(f"Rollback error: {e}")
+
+    def _check_exists(self, file):
+        if not self.reader.exists(file):
+            raise FileNotFoundError(f"File not found: {file}")
+
+    def _remove(self, path):
+        if self.reader.is_dir(path):
+            self.writer.remove_tree(path)
+        elif self.reader.exists(path):
+            self.writer.remove_file(path)
+
+    # -- opérations ---------------------------------------------------------
     def copy_files(self, destination):
         """Copy selected files"""
-        try:
-            selected_files = list(self.selection.get_selected_files())
-            for file in selected_files:
-                if self.reader.exists(file):
-                    self.writer.copy(file, destination)
-            self.output.show_message(f"{len(selected_files)} file(s) copied")
-            self.selection.clear_selection()
-        except Exception as e:
-            self.output.show_message(f"Copy error: {e}")
+        def action(file):
+            self._check_exists(file)
+            target = self.writer.copy(file, destination)
+            return lambda: self._remove(target)
+
+        done = self._run("Copy", action)
+        if done is not None:
+            self.ui.show_message(f"{done} file(s) copied")
 
     def move_files(self, destination):
         """Move selected files"""
-        try:
-            selected_files = list(self.selection.get_selected_files())
-            for file in selected_files:
-                if self.reader.exists(file):
-                    self.writer.move(file, destination)
-            self.output.show_message(f"{len(selected_files)} file(s) moved")
-            self.selection.clear_selection()
-        except Exception as e:
-            self.output.show_message(f"Move error: {e}")
+        def action(file):
+            self._check_exists(file)
+            origin = os.path.dirname(file)
+            target = self.writer.move(file, destination)
+            return lambda: self.writer.move(target, origin)
+
+        done = self._run("Move", action)
+        if done is not None:
+            self.ui.show_message(f"{done} file(s) moved")
 
     def delete_files(self):
-        """Delete selected files"""
-        try:
-            selected_files = list(self.selection.get_selected_files())
-            for file in selected_files:
-                if self.reader.is_file(file):
-                    self.writer.remove_file(file)
-                elif self.reader.is_dir(file):
-                    self.writer.remove_tree(file)
-            self.output.show_message(f"{len(selected_files)} file(s)/folder(s) deleted")
-            self.selection.clear_selection()
-        except Exception as e:
-            self.output.show_message(f"Delete error: {e}")
+        """Delete selected files.
+
+        Les éléments sont d'abord déplacés dans une corbeille temporaire, ce qui
+        permet le rollback ; la corbeille est vidée à la fin de l'opération.
+        """
+        trash = None
+
+        def action(file):
+            nonlocal trash
+            self._check_exists(file)
+            if trash is None:
+                trash = self.writer.make_temp_dir()
+            origin = os.path.dirname(file)
+            trashed = self.writer.move(file, trash)
+            return lambda: self.writer.move(trashed, origin)
+
+        done = self._run("Delete", action)
+        if trash is not None:
+            self._remove(trash)
+        if done is not None:
+            self.ui.show_message(f"{done} file(s)/folder(s) deleted")
 
 
 def main_menu():
