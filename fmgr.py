@@ -64,9 +64,11 @@ class FileSelector:
         self.selected_files.clear()
 
 
-class FileManager:
-    def __init__(self):
-        self.current_path = os.path.expanduser('~')
+class FileExplorer:
+    """Exploration du système de fichiers : répertoire courant, affichage, navigation, sélection"""
+
+    def __init__(self, start_path=None):
+        self.current_path = start_path or os.path.expanduser('~')
         self.file_selector = FileSelector()
 
     def display_directory_contents(self):
@@ -90,7 +92,7 @@ class FileManager:
             contents = os.listdir(self.current_path)
             selected_element = contents[index]
             full_path = os.path.join(self.current_path, selected_element)
-            
+
             if os.path.isdir(full_path):
                 self.current_path = full_path
                 self.display_directory_contents()
@@ -104,47 +106,59 @@ class FileManager:
         self.current_path = os.path.dirname(self.current_path)
         self.display_directory_contents()
 
+    def select_files(self, indices):
+        """Select files of the current directory by indices"""
+        return self.file_selector.select_files_by_indices(indices, self.current_path)
+
+
+class FileManager:
+    """Traitements sur les fichiers sélectionnés : copie, déplacement, suppression"""
+
+    def __init__(self, file_explorer):
+        self.file_explorer = file_explorer
+
     def copy_files(self, destination):
         """Copy selected files"""
         try:
-            selected_files = self.file_selector.get_selected_files()
+            selected_files = self.file_explorer.file_selector.get_selected_files()
             for file in selected_files:
                 if os.path.exists(file):
                     shutil.copy2(file, destination)
             print(f"{len(selected_files)} file(s) copied")
-            self.file_selector.clear_selection()
+            self.file_explorer.file_selector.clear_selection()
         except Exception as e:
             print(f"Copy error: {e}")
 
     def move_files(self, destination):
         """Move selected files"""
         try:
-            selected_files = self.file_selector.get_selected_files()
+            selected_files = self.file_explorer.file_selector.get_selected_files()
             for file in selected_files:
                 if os.path.exists(file):
                     shutil.move(file, destination)
             print(f"{len(selected_files)} file(s) moved")
-            self.file_selector.clear_selection()
+            self.file_explorer.file_selector.clear_selection()
         except Exception as e:
             print(f"Move error: {e}")
 
     def delete_files(self):
         """Delete selected files"""
         try:
-            selected_files = self.file_selector.get_selected_files()
+            selected_files = self.file_explorer.file_selector.get_selected_files()
             for file in selected_files:
                 if os.path.isfile(file):
                     os.remove(file)
                 elif os.path.isdir(file):
                     shutil.rmtree(file)
             print(f"{len(selected_files)} file(s)/folder(s) deleted")
-            self.file_selector.clear_selection()
+            self.file_explorer.file_selector.clear_selection()
         except Exception as e:
             print(f"Delete error: {e}")
 
 
 def main_menu():
-    file_manager = FileManager()
+    file_explorer = FileExplorer()
+    file_manager = FileManager(file_explorer)
     
     while True:
         print("\n--- File Explorer ---")
@@ -161,19 +175,19 @@ def main_menu():
         
         try:
             if choice == '1':
-                file_manager.display_directory_contents()
+                file_explorer.display_directory_contents()
             
             elif choice == '2':
                 index = int(input("Enter navigation index: "))
-                file_manager.navigate(index)
+                file_explorer.navigate(index)
             
             elif choice == '3':
-                file_manager.go_to_parent_directory()
+                file_explorer.go_to_parent_directory()
             
             elif choice == '4':
-                file_manager.display_directory_contents()
+                file_explorer.display_directory_contents()
                 indices = input("Enter file indices to select (comma-separated): ")
-                file_manager.file_selector.select_files_by_indices(indices, file_manager.current_path)
+                file_explorer.select_files(indices)
             
             elif choice == '5':
                 dest = input("Enter destination path for copying: ")
