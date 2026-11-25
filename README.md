@@ -4,9 +4,7 @@ Gestionnaire de fichiers en console (`fmgr.py`) refactorisé pour rendre `FileMa
 
 ## Équipe
 
-- Xavier Sanchez ([@xaviersanc](https://github.com/xaviersanc))
 - Emma Gailledrat ([@EmmaDotCom](https://github.com/EmmaDotCom))
-- Alexandre Sanchez ([@sonical0](https://github.com/sonical0))
 - Kilian Carasco ([@Vador634](https://github.com/Vador634))
 
 ## Lancer
